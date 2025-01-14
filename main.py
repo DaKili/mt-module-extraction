@@ -1,5 +1,7 @@
 from dataclasses import asdict, dataclass
 import json
+import os
+from pathlib import Path
 import re
 from typing import Optional
 import pdfplumber
@@ -100,17 +102,16 @@ def sanitize_raw_module_text(raw_module_text: str):
     return raw_module_text.strip()
 
 def extract_module_data(module_lines: str) -> Module:
-    # Helper function to find index of line starting with a pattern
     module_lines = module_lines.split("\n")
     if len(module_lines) < 3:
         return None 
+
     def find_line_index(pattern: str) -> int:
         for i, line in enumerate(module_lines):
             if line.startswith(pattern):
                 return i
         return -1
     
-    # Helper function to extract content between two patterns
     def extract_between(start_pattern: str, end_pattern: str) -> str:
         start_idx = find_line_index(start_pattern)
         if start_idx == -1:
@@ -128,60 +129,63 @@ def extract_module_data(module_lines: str) -> Module:
         content = '\n'.join(module_lines[start_idx + 1:end_idx])
         return content.strip()
 
-    # Get module ID and title from first line
     title_line = module_lines[0] if module_lines else ""
     title_match = re.search(r'\[\[TITLE\]\]: (.*?):(.*?)(?:\||$)', title_line)
     module_id = title_match.group(1).strip() if title_match else ""
     title = title_match.group(2).strip() if title_match else ""
 
-    # Get basic info
     basic_info_idx = find_line_index("Modulniveau:")
     if basic_info_idx != -1 and basic_info_idx + 1 < len(module_lines):
-        info_parts = module_lines[basic_info_idx + 1].split()
-        i = 0
-        skip_level = False
-        if len(info_parts) < 4:
-            skip_level = True
-            level = ""
+        if not module_lines[basic_info_idx + 1].startswith("Credits:"):
+            info_parts = module_lines[basic_info_idx + 1].split()
+            i = 0
+            skip_level = False
+            if len(info_parts) < 4:
+                skip_level = True
+                level = ""
 
-        if not skip_level:
-            level = info_parts[i]
-            i += 1
+            if not skip_level:
+                level = info_parts[i]
+                i += 1
 
-        language = info_parts[i]
-        semester_duration = info_parts[i + 1]
-        frequency = info_parts[i + 2]
-        if frequency.endswith("/"):
-            frequency += module_lines[basic_info_idx + 2]
+            language = info_parts[i]
+            semester_duration = info_parts[i + 1]
+            frequency = info_parts[i + 2]
+            if frequency.endswith("/"):
+                frequency += module_lines[basic_info_idx + 2]
+        else:
+            level = language = semester_duration = frequency = None
     else:
         print(module_id + ": Issue reading first data row")
         level = language = semester_duration = frequency = None
 
-    # Extract credits and hours
     credits_idx = find_line_index("Credits:")
     if credits_idx != -1 and credits_idx + 1 < len(module_lines):
         hours_line = module_lines[credits_idx + 1]
 
-        if not module_lines[credits_idx + 2].startswith("Beschreibung"):
-            hours_self_study = int(module_lines[credits_idx + 2])
-        else:
-            hours_self_study = None
+        if not hours_line.startswith("stunden:"):
+            if not module_lines[credits_idx + 2].startswith("Beschreibung"):
+                hours_self_study = int(module_lines[credits_idx + 2])
+            else:
+                hours_self_study = None
+            
+            numbers_match = re.findall(r'(\d+)', hours_line)
+            if len(numbers_match) >= 3:
+                credits = int(numbers_match[0])
+                hours_total = int(numbers_match[1])
+                hours_presence = int(numbers_match[2])
+            else:
+                credits = int(numbers_match[0]) if numbers_match else None
+                hours_total = None
+                hours_presence = int(numbers_match[1]) if len(numbers_match) > 1 else None
         
-        numbers_match = re.findall(r'(\d+)', hours_line)
-        if len(numbers_match) >= 3:
-            credits = int(numbers_match[0])
-            hours_total = int(numbers_match[1])
-            hours_presence = int(numbers_match[2])
         else:
-            credits = int(numbers_match[0]) if numbers_match else None
-            hours_total = None
-            hours_presence = int(numbers_match[1]) if len(numbers_match) > 1 else None
+            credits = hours_total = hours_presence = hours_self_study =  None
             
     else:
         print(module_id + ": Issue reading second data row")
         credits = hours_total = hours_self_study = hours_presence = None
 
-    # Extract all sections
     examination_achievements = extract_between(
         'Beschreibung der Studien-/ Prüfungsleistungen:', 
         'Wiederholungsmöglichkeit:'
@@ -228,7 +232,7 @@ def extract_module_data(module_lines: str) -> Module:
     )
 
     if credits == None:
-        print("HERE")
+        print(module_id + "HERE")
 
     return Module(
         module_id=module_id,
@@ -257,24 +261,44 @@ def save_modules_to_json(modules: list[Module], output_file: str):
         json.dump([asdict(module) for module in modules], f, 
                  ensure_ascii=False, indent=2)
 
-
 def main():
-    # pdf_file_path = "input/Modulhandbuch_Department_Electrical_Engineering_15403417_20240910171354.pdf"
-    pdf_file_path = "input/Modulhandbuch_Department_Computer_Engineering_15403408_20240910171122.pdf"
+    Path("output").mkdir(exist_ok=True)
+    pdf_files = [f for f in os.listdir("input") if f.lower().endswith('.pdf')]
+    total_files = len(pdf_files)
     
-    modules = extract_modules(pdf_file_path)
-    cleaned_modules = [sanitize_raw_module_text(module) for module in modules]
-    cleaned_modules = [module for module in cleaned_modules if len(module.split('\n')) > 2]
-    module_objects = [extract_module_data(module) for module in cleaned_modules]
-    # module_objects = [m for m in module_objects if m is not None]
-
-    print("Module count: " + str(len(module_objects)))
-
-    # save txt
-    with open('output/modules.txt', 'w', encoding='utf-8') as f:
-        f.write('\n\n'.join(cleaned_modules))
+    print(f"Found {total_files} PDF files to process")
     
-    save_modules_to_json(module_objects, 'output/modules.json')
+    for index, pdf_file in enumerate(pdf_files, 1):
+        if "Mathematics" not in pdf_file:
+            continue
+        input_path = os.path.join("input", pdf_file)
+        base_name = os.path.splitext(pdf_file)[0]
+        txt_output = os.path.join("output", f"{base_name}.txt")
+        json_output = os.path.join("output", f"{base_name}.json")
+        
+        print(f"\nProcessing file {index}/{total_files}: {pdf_file}")
+        
+        try:
+            modules = extract_modules(input_path)
+            cleaned_modules = [sanitize_raw_module_text(module) for module in modules]
+            cleaned_modules = [module for module in cleaned_modules if len(module.split('\n')) > 2]
+            module_objects = [extract_module_data(module) for module in cleaned_modules]
+            
+            print(f"Extracted {len(module_objects)} modules")
+            
+            # Save text file
+            with open(txt_output, 'w', encoding='utf-8') as f:
+                f.write('\n\n'.join(cleaned_modules))
+                
+            # Save JSON file
+            save_modules_to_json(module_objects, json_output)
+            
+            print(f"Saved output to {txt_output} and {json_output}")
+            
+        except Exception as e:
+            print(f"Error processing {pdf_file}: {str(e)}")
+    
+    print("\nProcessing complete!")
 
 if __name__ == "__main__":
     main()
