@@ -269,8 +269,6 @@ def main():
     print(f"Found {total_files} PDF files to process")
     
     for index, pdf_file in enumerate(pdf_files, 1):
-        if "Mathematics" not in pdf_file:
-            continue
         input_path = os.path.join("input", pdf_file)
         base_name = os.path.splitext(pdf_file)[0]
         txt_output = os.path.join("output", f"{base_name}.txt")
